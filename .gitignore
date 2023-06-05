@@ -1,5 +1,6 @@
 credentials.json
 *.pdf
+*.jpg
 
 
 ### default gitignore python
