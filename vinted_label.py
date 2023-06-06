@@ -8,6 +8,7 @@ import html2text
 import re
 from wand.image import Image
 from wand.color import Color
+from wand.drawing import Drawing
 
 attachments = {}
 credentials = google.oauth2.credentials.Credentials.from_authorized_user_file(
@@ -89,21 +90,53 @@ def download_all_attachments():
 
 
 def main():
+    # pixels in a 300 dpi pdf
+    # width 2480
+    # height 3507
+    # without margin
+    page_width = 2480
+    page_height = 3508
     attachments = download_all_attachments()
-    for keys, values in attachments.items():
+    for key, value in attachments.items():
         # Save images
-        with Image(filename=values["filename"], resolution=300) as img:
+        with Image(filename=value["filename"],
+                   resolution=300,
+                   colorspace='rgb') as img:
             img.format = 'jpeg'
-
-            # Set background color to white
-            img.background_color = Color("white")
-            img.alpha_channel = 'remove'
-
-            # Trim the image to remove surrounding whitespace
             img.trim()
+            if img.height > img.width:
+                img.rotate(degree=90)
+            margin_top = 100
+            margin_side = 100
+            max_height = (page_height - margin_top) / 2
+            max_width = (page_width - margin_side) / 2
+            perc_to_resize = min(max_height / img.height,
+                                 max_width / img.width)
+            img.resize(width=int(img.width * perc_to_resize),
+                       height=int(img.height * perc_to_resize))
+            with Image(width=img.width,
+                       height=img.height + margin_top,
+                       background=Color("white")) as top_border_img:
+                top_border_img.composite(
+                    img,
+                    left=0,
+                    top=margin_top,
+                )
 
-            # Save the trimmed image
-            img.save(filename='output.jpg')
+                with Drawing() as draw:
+                    # Set the text properties
+                    draw.font = 'Arial'
+                    draw.font_size = 50
+                    draw.fill_color = Color('black')
+                    draw.stroke_color = Color('white')
+
+                    # Write the text on the image
+                    draw.text(body='Hello, World!', x=20, y=70)
+
+                    # Draw the text on the image
+                    draw(top_border_img)
+                    top_border_img.save(
+                        filename=os.path.join("images", f"{key}.jpg"))
 
 
 if __name__ == "__main__":
