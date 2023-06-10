@@ -9,6 +9,7 @@ import re
 from wand.image import Image
 from wand.color import Color
 from wand.drawing import Drawing
+from wand.font import Font
 
 attachments = {}
 credentials = google.oauth2.credentials.Credentials.from_authorized_user_file(
@@ -53,9 +54,9 @@ def download_all_attachments():
                                              id=message['id'],
                                              format='full').execute()
         logging.info(f"managing email with snippet:{msg['snippet']}")
-
         transaction_n = ""
         filename = ""
+        subject = ""
         msg_txt = ""
         for part in msg['payload']['parts']:
             data = part['body']
@@ -75,9 +76,15 @@ def download_all_attachments():
                 if 'attachmentId' not in body:
                     continue
                 filename = download_attachments(part=part, msg_id=msg["id"])
+        for header in msg["payload"]["headers"]:
+            if header['name'].lower() == 'subject':
+                subject = header['value']
+                break
         attachments[transaction_n] = {
             "filename": filename,
             "body": msg_txt,
+            "snippet": msg["snippet"],
+            "subject": subject,
         }
         # TODO: risolvere errore sui permessi in modo da poter mettere come lette le email
         # service.users().messages().modify(
@@ -89,54 +96,65 @@ def download_all_attachments():
     return attachments
 
 
+page_width = 2480
+page_height = 3508
+
+
+def pdf_to_img_with_title(path, title, destination):
+    with Image(
+            filename=path,
+            resolution=300,
+            colorspace='rgb',
+    ) as img:
+        img.format = 'jpeg'
+        img.trim()
+        if img.height > img.width:
+            img.rotate(degree=90)
+        margin_top = 100
+        margin_side = 100
+        max_height = (page_height - margin_top) / 2
+        max_width = (page_width - margin_side) / 2
+        perc_to_resize = min(max_height / img.height, max_width / img.width)
+        img.resize(width=int(img.width * perc_to_resize),
+                   height=int(img.height * perc_to_resize))
+        with Image(width=img.width,
+                   height=img.height + margin_top,
+                   background=Color("white")) as top_border_img:
+            top_border_img.composite(
+                img,
+                left=0,
+                top=margin_top,
+            )
+
+            with Drawing() as draw:
+                # Set the text properties
+                draw.font = 'Arial-bold'
+                draw.font_size = 40
+                draw.text_antialias = True
+                draw.fill_color = Color('black')
+                draw.stroke_color = Color('white')
+
+                # Write the text on the image
+                draw.text_interline_spaceing = 30
+                draw.text(body=title, x=20, y=40)
+
+                # Draw the text on the image
+                draw(top_border_img)
+                top_border_img.save(
+                    filename=os.path.join("images", destination))
+
+
 def main():
     # pixels in a 300 dpi pdf
     # width 2480
     # height 3507
     # without margin
-    page_width = 2480
-    page_height = 3508
     attachments = download_all_attachments()
-    for key, value in attachments.items():
+    for key, a in attachments.items():
+        pdf_to_img_with_title(path=a["filename"],
+                              title=a["subject"],
+                              destination=f"{key}.jpg")
         # Save images
-        with Image(filename=value["filename"],
-                   resolution=300,
-                   colorspace='rgb') as img:
-            img.format = 'jpeg'
-            img.trim()
-            if img.height > img.width:
-                img.rotate(degree=90)
-            margin_top = 100
-            margin_side = 100
-            max_height = (page_height - margin_top) / 2
-            max_width = (page_width - margin_side) / 2
-            perc_to_resize = min(max_height / img.height,
-                                 max_width / img.width)
-            img.resize(width=int(img.width * perc_to_resize),
-                       height=int(img.height * perc_to_resize))
-            with Image(width=img.width,
-                       height=img.height + margin_top,
-                       background=Color("white")) as top_border_img:
-                top_border_img.composite(
-                    img,
-                    left=0,
-                    top=margin_top,
-                )
-
-                with Drawing() as draw:
-                    # Set the text properties
-                    draw.font = 'Arial'
-                    draw.font_size = 50
-                    draw.fill_color = Color('black')
-                    draw.stroke_color = Color('white')
-
-                    # Write the text on the image
-                    draw.text(body='Hello, World!', x=20, y=70)
-
-                    # Draw the text on the image
-                    draw(top_border_img)
-                    top_border_img.save(
-                        filename=os.path.join("images", f"{key}.jpg"))
 
 
 if __name__ == "__main__":
