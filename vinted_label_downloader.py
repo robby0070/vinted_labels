@@ -1,15 +1,28 @@
+# general utility libraries
 import base64
 import logging
 import os
+import re
+from datetime import datetime
+import io
+
+# libraries to deal with emails
 import google.oauth2.credentials
 from googleapiclient.discovery import build
 from bs4 import BeautifulSoup
 import html2text
-import re
+
+# libraries to deal with images
 from wand.image import Image
 from wand.color import Color
 from wand.drawing import Drawing
 from wand.font import Font
+
+import PIL.Image
+
+# librearies to make the telegram bot
+from telegram import ForceReply, Update, InputFile
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 attachments = {}
 credentials = google.oauth2.credentials.Credentials.from_authorized_user_file(
@@ -96,11 +109,8 @@ def download_all_attachments():
     return attachments
 
 
-page_width = 2480
-page_height = 3508
-
-
-def pdf_to_img_with_title(path, title, destination):
+def pdf_to_img_with_title(path, title, max_width: int, max_height: int):
+    space_for_title = 50
     with Image(
             filename=path,
             resolution=300,
@@ -110,51 +120,143 @@ def pdf_to_img_with_title(path, title, destination):
         img.trim()
         if img.height > img.width:
             img.rotate(degree=90)
-        margin_top = 100
-        margin_side = 100
-        max_height = (page_height - margin_top) / 2
-        max_width = (page_width - margin_side) / 2
-        perc_to_resize = min(max_height / img.height, max_width / img.width)
+        perc_to_resize = min(
+            max_width / img.width,
+            (max_height - space_for_title) / img.height,
+        )
         img.resize(width=int(img.width * perc_to_resize),
                    height=int(img.height * perc_to_resize))
-        with Image(width=img.width,
-                   height=img.height + margin_top,
-                   background=Color("white")) as top_border_img:
-            top_border_img.composite(
-                img,
-                left=0,
-                top=margin_top,
-            )
+        top_border_img = Image(width=max_width,
+                               height=max_height + space_for_title,
+                               background=Color("white"))
+        top_border_img.composite(
+            img,
+            left=0,
+            top=50,
+        )
 
-            with Drawing() as draw:
-                # Set the text properties
-                draw.font = 'Arial-bold'
-                draw.font_size = 40
-                draw.text_antialias = True
-                draw.fill_color = Color('black')
-                draw.stroke_color = Color('white')
+        with Drawing() as draw:
+            # Set the text properties
+            draw.font = 'Arial-bold'
+            draw.font_size = 40
+            draw.text_antialias = True
+            draw.fill_color = Color('black')
+            draw.stroke_color = Color('white')
 
-                # Write the text on the image
-                draw.text_interline_spaceing = 30
-                draw.text(body=title, x=20, y=40)
+            # Write the text on the image
+            draw.text_interline_spaceing = 30
+            draw.text(body=title, x=20, y=40)
 
-                # Draw the text on the image
-                draw(top_border_img)
-                top_border_img.save(
-                    filename=os.path.join("images", destination))
+            # Draw the text on the image
+            draw(top_border_img)
+
+        return top_border_img
 
 
-def main():
-    # pixels in a 300 dpi pdf
-    # width 2480
-    # height 3507
-    # without margin
+allowed_users = [638353353]
+
+
+def create_pdf():
+    page_width = 2480
+    page_height = 3508
+    margin_top = 250
+    margin_side = 250
     attachments = download_all_attachments()
-    for key, a in attachments.items():
-        pdf_to_img_with_title(path=a["filename"],
-                              title=a["subject"],
-                              destination=f"{key}.jpg")
-        # Save images
+
+    pdf_pages = []
+
+    def create_pdf_page(img1, img2=None):
+        with Image(
+                width=page_width,
+                height=page_height,
+                background=Color("white"),
+        ) as pdf_page:
+            pdf_page.composite(
+                img1,
+                top=margin_top // 2,
+                left=margin_side // 2,
+            )
+            img1.close()
+            if img2:
+                pdf_page.composite(
+                    img2,
+                    top=page_height // 2 + margin_top // 2,
+                    left=margin_side // 2,
+                )
+                img2.close()
+            pdf_pages.append(
+                PIL.Image.open(io.BytesIO(pdf_page.make_blob("png"))))
+
+    prev = None
+    for _, a in attachments.items():
+        img = pdf_to_img_with_title(
+            path=a["filename"],
+            title=a["subject"],
+            max_height=page_height // 2 - margin_top,
+            max_width=page_width - margin_side,
+        )
+        if not prev:
+            prev = img
+            continue
+        create_pdf_page(img1=prev, img2=img)
+        prev = None
+    if prev:
+        create_pdf_page(img1=prev)
+    buffer = io.BytesIO()
+    pdf_pages[0].save(
+        buffer,
+        save_all=True,
+        append_images=pdf_pages[1:],
+        format="PDF",
+    )
+    buffer.seek(0)
+    return buffer
+
+
+async def prepare_pdf(update: Update,
+                      context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user.id not in allowed_users:
+        await update.message.reply_html(f"private bot, go away: {user.id}")
+
+    # await update.message.reply_html(f"preparing pdf for: {user.id}")
+    pdf_blob = create_pdf()
+    # await update.message.reply_html(f"pdf completed, sending...")
+    filename = f"vinted_{datetime.now().strftime(r'%Y-%m-%d_%H-%M-%S')}.pdf"
+    print(filename)
+    await update.message.reply_document(document=InputFile(
+        pdf_blob,
+        filename,
+    ), )
+
+
+async def help_command(update: Update,
+                       context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Help!")
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    await update.message.reply_html(
+        rf"Hi {user.mention_html()}!",
+        reply_markup=ForceReply(selective=True),
+    )
+
+
+def main() -> None:
+    with open("token.txt", "r") as token_file:
+        application = Application.builder().token(token_file.read()).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pdf", prepare_pdf))
+
+    # application.add_handler(
+    #     MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+    application.run_polling()
+
+    # Save images
 
 
 if __name__ == "__main__":
