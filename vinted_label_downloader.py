@@ -6,8 +6,13 @@ import re
 from datetime import datetime
 import io
 
+# libraries for google credentials management
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
 # libraries to deal with emails
-import google.oauth2.credentials
 from googleapiclient.discovery import build
 from bs4 import BeautifulSoup
 import html2text
@@ -16,18 +21,19 @@ import html2text
 from wand.image import Image
 from wand.color import Color
 from wand.drawing import Drawing
-from wand.font import Font
 
 import PIL.Image
 
 # librearies to make the telegram bot
 from telegram import ForceReply, Update, InputFile
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
+service = None
 attachments = {}
-credentials = google.oauth2.credentials.Credentials.from_authorized_user_file(
-    'credentials.json', ['https://www.googleapis.com/auth/gmail.readonly'])
-service = build('gmail', 'v1', credentials=credentials)
 
 
 def htmlb64_to_plain(data):
@@ -52,6 +58,11 @@ def download_attachments(part, msg_id):
 
 
 def download_all_attachments():
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+
     messages = service.users().messages().list(userId='me',
                                                labelIds=[
                                                    'Label_5694856354124115227'
@@ -99,12 +110,11 @@ def download_all_attachments():
             "snippet": msg["snippet"],
             "subject": subject,
         }
-        # TODO: risolvere errore sui permessi in modo da poter mettere come lette le email
-        # service.users().messages().modify(
-        #     userId = "me",
-        #     id = msg["id"],
-        #     body = { "removeLabelIds": ["UNREAD"] }
-        # ).execute()
+        service.users().messages().modify(userId="me",
+                                          id=msg["id"],
+                                          body={
+                                              "removeLabelIds": ["UNREAD"]
+                                          }).execute()
 
     return attachments
 
@@ -244,6 +254,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    global service
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    service = build('gmail', 'v1', credentials=creds)
     with open("token.txt", "r") as token_file:
         application = Application.builder().token(token_file.read()).build()
 

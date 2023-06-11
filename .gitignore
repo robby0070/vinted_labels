@@ -2,6 +2,7 @@ credentials.json
 *.pdf
 *.jpg
 token.txt
+token.json
 
 
 ### default gitignore python
